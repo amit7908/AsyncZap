@@ -1,7 +1,18 @@
 {
     "name": "asynczap",
-    "version": "1.0.0",
+    "version": "1.0.2",
     "description": "A lightweight, MongoDB-backed job queue for Node.js",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/amit7908/AsyncZap.git"
+    },
+    "bugs": {
+        "url": "https://github.com/amit7908/AsyncZap/issues"
+    },
+    "homepage": "https://github.com/amit7908/AsyncZap#readme",
+    "engines": {
+        "node": ">=20.0.0"
+    },
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
     "bin": {

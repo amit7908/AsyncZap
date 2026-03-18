@@ -2,7 +2,7 @@
 
 <div align="center">
   <img src="https://img.shields.io/npm/v/asynczap" alt="NPM Version" />
-  <img src="https://img.shields.io/npm/l/asynczap" alt="License" />
+  <img src="https://img.shields.io/github/license/amit7908/AsyncZap" alt="License" />
   <img src="https://img.shields.io/node/v/asynczap" alt="Node Version" />
   <img src="https://img.shields.io/badge/TypeScript-5.x-blue.svg" alt="TypeScript" />
   <img src="https://img.shields.io/badge/MongoDB-Supported-green.svg" alt="MongoDB" />
@@ -76,7 +76,7 @@ bootstrap();
 
 AsyncZap uses **Deterministic Hashing** to distribute jobs across multiple MongoDB collections (`asynczap_jobs_0`, `asynczap_jobs_1`, etc.). Workers independently poll assigned partitions, achieving zero cross-worker lock contention.
 
-Read more in our [Architecture Guide](docs/architecture.md).
+Read more in our [Architecture Guide](https://github.com/amit7908/AsyncZap/blob/main/docs/architecture.md).
 
 ## 🚀 Performance & Benchmarks
 
@@ -86,7 +86,7 @@ Compared directly to Single-Collection queues, AsyncZap's bulk enqueuing is high
 - **Bulk Enqueue**: ~871 jobs/second (174x faster than sequential)
 - **Scaling**: Linearly scales by setting `n` partitions and `w` workers.
 
-Read the [Full Benchmark Results](docs/benchmarks.md).
+Read the [Full Benchmark Results](https://github.com/amit7908/AsyncZap/blob/main/docs/benchmarks.md).
 
 ## ⚔️ Comparison
 
@@ -103,12 +103,12 @@ Read the [Full Benchmark Results](docs/benchmarks.md).
 
 Dive deeper into our specific comprehensive guides:
 
-- [Architecture & Design](docs/architecture.md)
-- [Building DAG Workflows](docs/workflows.md)
-- [Working with Multi-Tenancy](docs/multi-tenancy.md)
-- [System Backpressure Management](docs/backpressure.md)
-- [Retries and Dead Letter Queues (DLQ)](docs/retry-and-dlq.md)
-- [Benchmarks](docs/benchmarks.md)
+- [Architecture & Design](https://github.com/amit7908/AsyncZap/blob/main/docs/architecture.md)
+- [Building DAG Workflows](https://github.com/amit7908/AsyncZap/blob/main/docs/workflows.md)
+- [Working with Multi-Tenancy](https://github.com/amit7908/AsyncZap/blob/main/docs/multi-tenancy.md)
+- [System Backpressure Management](https://github.com/amit7908/AsyncZap/blob/main/docs/backpressure.md)
+- [Retries and Dead Letter Queues (DLQ)](https://github.com/amit7908/AsyncZap/blob/main/docs/retry-and-dlq.md)
+- [Benchmarks](https://github.com/amit7908/AsyncZap/blob/main/docs/benchmarks.md)
 
 ## 🖥️ CLI & Dashboard
 
@@ -126,8 +126,8 @@ npx asynczap stats -u mongodb://localhost/myapp
 
 ## 🤝 Contributing
 
-We welcome contributions! Please review our [Contributing Guide](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md) before opening a PR.
+We welcome contributions! Please review our [Contributing Guide](https://github.com/amit7908/AsyncZap/blob/main/CONTRIBUTING.md) and [Code of Conduct](https://github.com/amit7908/AsyncZap/blob/main/CODE_OF_CONDUCT.md) before opening a PR.
 
 ## 📜 License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the [MIT License](https://github.com/amit7908/AsyncZap/blob/main/LICENSE).
