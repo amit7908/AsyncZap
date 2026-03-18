@@ -1,0 +1,46 @@
+{
+    "name": "asynczap",
+    "version": "1.0.0",
+    "description": "A lightweight, MongoDB-backed job queue for Node.js",
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "bin": {
+        "asynczap": "dist/cli/cli.js"
+    },
+    "files": [
+        "dist",
+        "README.md",
+        "LICENSE"
+    ],
+    "scripts": {
+        "build": "tsc",
+        "prepublishOnly": "npm run build",
+        "test": "jest"
+    },
+    "keywords": [
+        "job",
+        "queue",
+        "mongodb",
+        "mongoose",
+        "background",
+        "worker"
+    ],
+    "author": "",
+    "license": "MIT",
+    "peerDependencies": {
+        "mongoose": "^8.23.0"
+    },
+    "devDependencies": {
+        "@types/jest": "^30.0.0",
+        "@types/node": "^20.0.0",
+        "jest": "^30.3.0",
+        "ts-jest": "^29.4.6",
+        "typescript": "^5.3.0"
+    },
+    "dependencies": {
+        "@nestjs/common": "^11.1.16",
+        "commander": "^14.0.3",
+        "ts-node": "^10.9.2",
+        "zod": "^4.3.6"
+    }
+}
