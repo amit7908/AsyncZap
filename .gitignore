@@ -39,5 +39,5 @@ tests/
 tools/
 
 #docs
-docs/
+# docs/
 mongo_job_queue_security_analysis.md
