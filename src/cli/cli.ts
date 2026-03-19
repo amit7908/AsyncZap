@@ -127,9 +127,10 @@ program
 program
     .command('dashboard')
     .description('Starts the AsyncZap Web Monitoring Dashboard')
+    .requiredOption('-u, --uri <string>', 'MongoDB connection URI')
     .option('-p, --port <number>', 'Port to run the web server on', '3000')
     .action(async (options) => {
-        const uri = program.opts().uri;
+        const uri = options.uri;
         console.log(`Starting AsyncZap Web Dashboard on port ${options.port}...`);
         
         // Dynamic import so we don't load fastify in standard CLI commands unless needed

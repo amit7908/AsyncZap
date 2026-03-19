@@ -293,11 +293,17 @@ export class Worker extends EventEmitter {
 
     private delay(ms: number) {
         return new Promise(resolve => {
-            const timeout = setTimeout(resolve, ms);
-            this.sleepEmitter.once('wakeup', () => {
+            const timeout = setTimeout(() => {
+                this.sleepEmitter.removeListener('wakeup', onWakeup);
+                resolve(null);
+            }, ms);
+
+            const onWakeup = () => {
                 clearTimeout(timeout);
                 resolve(null);
-            });
+            };
+
+            this.sleepEmitter.once('wakeup', onWakeup);
         });
     }
 
