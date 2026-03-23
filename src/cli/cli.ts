@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
-import mongoose from 'mongoose';
+import mongoose, { Types } from 'mongoose';
 import { AsyncZapQueue, Metrics } from '../index';
 
 const program = new Command();
@@ -12,7 +12,8 @@ program
 
 // Shared connection helper
 async function connectToMongo(uri: string): Promise<AsyncZapQueue> {
-    console.log(`Connecting to MongoDB at ${uri}...`);
+    // SEC-01: Mask credentials in URI to prevent logging secrets
+    console.log(`Connecting to MongoDB at ${uri.replace(/:([^@]+)@/, ':***@')}...`);
     await mongoose.connect(uri);
     // Hardcoded 4 for CLI defaults, though in production this might come from env/meta
     const queue = new AsyncZapQueue(mongoose.connection, { partitions: 4 });
@@ -89,8 +90,18 @@ program
     .action(async (id, options) => {
         const uri = options.uri;
         await mongoose.connect(uri);
-        const queue = new AsyncZapQueue(mongoose.connection, { partitions: 1 });
+        
+        // BUG-04 fix: Read real partition count from DB instead of hardcoding 1
+        const meta = await mongoose.connection.collection('asynczap_meta').findOne({ _id: 'queue_config' as any });
+        const partitions = (meta as any)?.partitions || 4;
+        const queue = new AsyncZapQueue(mongoose.connection, { partitions });
         await queue.initialize();
+
+        // SEC-04: Validate job ID format before DB query
+        if (!Types.ObjectId.isValid(id)) {
+            console.error('Invalid job ID format');
+            process.exit(1);
+        }
 
         console.log(`Replaying Job ID: ${id}`);
         try {
@@ -129,13 +140,14 @@ program
     .description('Starts the AsyncZap Web Monitoring Dashboard')
     .requiredOption('-u, --uri <string>', 'MongoDB connection URI')
     .option('-p, --port <number>', 'Port to run the web server on', '3000')
+    .option('-t, --token <string>', 'Optional bearer token for API authentication')
     .action(async (options) => {
         const uri = options.uri;
         console.log(`Starting AsyncZap Web Dashboard on port ${options.port}...`);
         
         // Dynamic import so we don't load fastify in standard CLI commands unless needed
         const { startDashboard } = require('../dashboard/server');
-        await startDashboard(uri, parseInt(options.port));
+        await startDashboard(uri, parseInt(options.port), options.token);
     });
 
 program.parse(process.argv);

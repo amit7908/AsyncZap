@@ -26,8 +26,8 @@ export class Metrics {
      * Aggregates job counts across all underlying MongoDB partition collections.
      */
     async getMetrics(): Promise<QueueMetrics> {
-        const partitionManager = (this.queue as any).partitionManager;
-        const adapter = (this.queue as any).adapter;
+        const partitionManager = this.queue.getPartitionManager();
+        const adapter = this.queue.getAdapter();
         const count = partitionManager.getPartitionCount();
 
         const metrics: QueueMetrics = {

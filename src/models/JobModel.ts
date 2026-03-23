@@ -24,6 +24,7 @@ export const JobSchema = new Schema<JobDocument>({
     workerId: { type: String, default: null },
     error: { type: String, default: null },
     result: { type: Schema.Types.Mixed, default: null },
+    lockToken: { type: String, default: null },
     dependencies: [{ type: Schema.Types.ObjectId }],
     remainingDependencies: { type: Number, default: 0 }
 }, {

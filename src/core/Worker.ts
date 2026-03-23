@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import os from 'os';
 import { EventEmitter } from 'events';
 import { MongoAdapter } from '../adapters/MongoAdapter';
 import { WorkerOptions, JobDocument } from '../types';
@@ -16,6 +17,7 @@ export class Worker extends EventEmitter {
     private options: Required<WorkerOptions>;
     private handlers: Map<string, JobHandler> = new Map();
     private isRunning = false;
+    private isShuttingDown = false; // REL-05: Guard against post-stop dispatch
     private activeJobsCount = 0;
 
     // For round-robin adaptive polling across assigned partitions
@@ -26,6 +28,7 @@ export class Worker extends EventEmitter {
     private jobBuffer: JobDocument[] = [];
     private sleepEmitter = new EventEmitter();
     private activeChangeStreams: any[] = [];
+    private readonly hostname: string; // QA-04: Cache hostname
 
     constructor(adapter: MongoAdapter, options: WorkerOptions, pluginManager?: PluginManager) {
         super();
@@ -33,6 +36,7 @@ export class Worker extends EventEmitter {
         this.tenantScheduler = new TenantScheduler(adapter);
         this.pluginManager = pluginManager;
         this.workerId = `worker-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+        this.hostname = os.hostname(); // QA-04: Cache once instead of calling on every heartbeat
 
         this.options = {
             id: options.id || crypto.randomUUID(),
@@ -42,7 +46,8 @@ export class Worker extends EventEmitter {
             lockTimeout: options.lockTimeout || 300000,
             heartbeatInterval: options.heartbeatInterval || 15000,
             maxActiveJobs: options.maxActiveJobs || 0,
-            prefetchBatchSize: options.prefetchBatchSize || 0
+            prefetchBatchSize: options.prefetchBatchSize || 0,
+            drainTimeoutMs: options.drainTimeoutMs || 30000 // REL-01: Default 30s drain timeout
         };
 
         if (this.options.partitions.length === 0) {
@@ -69,7 +74,7 @@ export class Worker extends EventEmitter {
             { workerId: this.workerId },
             {
                 $set: {
-                    host: require('os').hostname(),
+                    host: this.hostname, // QA-04: Use cached hostname
                     partitions: this.options.partitions,
                     heartbeatAt: new Date(),
                     status: 'active'
@@ -102,6 +107,7 @@ export class Worker extends EventEmitter {
         await this.registerWorker();
         this.startHeartbeat();
 
+        // TEST-04: Log change stream errors instead of silently swallowing
         try {
             for (const pId of this.options.partitions) {
                 const stream = this.adapter.watchPartition(pId, () => {
@@ -112,26 +118,55 @@ export class Worker extends EventEmitter {
                 });
                 this.activeChangeStreams.push(stream);
             }
-        } catch (err) { }
+        } catch (err: any) {
+            this.emit('worker:error', new Error(`Change stream unavailable, falling back to polling: ${err.message}`));
+        }
 
-        this.pollLoop();
+        // REL-03: Catch unhandled rejections from poll loop
+        this.pollLoop().catch(err => {
+            this.emit('worker:error', err);
+            this.isRunning = false;
+        });
     }
 
+    // REL-01: Added drain timeout to prevent infinite hang
     async stop(): Promise<void> {
+        this.isShuttingDown = true; // REL-05: Set shutdown flag before drain
         this.isRunning = false;
         this.triggerWakeup();
         for (const stream of this.activeChangeStreams) {
             try { await stream.close(); } catch (e) { }
         }
-        while (this.activeJobsCount > 0) {
-            await new Promise(resolve => setTimeout(resolve, 100));
+
+        // REL-01: Race between drain loop and timeout
+        const drainPromise = (async () => {
+            while (this.activeJobsCount > 0) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+        })();
+
+        const timeoutPromise = new Promise<void>((_, reject) =>
+            setTimeout(() => reject(new Error('drain-timeout')), this.options.drainTimeoutMs)
+        );
+
+        try {
+            await Promise.race([drainPromise, timeoutPromise]);
+        } catch {
+            this.emit('worker:drain-timeout', {
+                activeJobs: this.activeJobsCount,
+                timeoutMs: this.options.drainTimeoutMs
+            });
         }
+
         this.stopHeartbeat();
         this.emit('worker:stopped', this.workerId);
     }
 
     private async pollLoop(): Promise<void> {
         while (this.isRunning) {
+            // REL-05: Don't acquire new jobs after shutdown is requested
+            if (this.isShuttingDown) break;
+
             if (this.activeJobsCount >= this.options.concurrency) {
                 await this.delay(100);
                 continue;
@@ -227,7 +262,19 @@ export class Worker extends EventEmitter {
         }
 
         try {
-            const result = await handler(job);
+            let result = await handler(job);
+
+            // QA-08: Limit result size to prevent oversized documents
+            try {
+                const resultStr = JSON.stringify(result);
+                if (Buffer.byteLength(resultStr) > 512 * 1024) {
+                    console.warn(`[Worker] Job ${job._id} result exceeds 512KB, truncating`);
+                    result = { truncated: true, size: Buffer.byteLength(resultStr) };
+                }
+            } catch {
+                // Result is not JSON serializable, store as-is
+            }
+
             await this.adapter.updateJobStatus(partitionId, job._id.toString(), {
                 status: 'completed',
                 result: result,
@@ -236,12 +283,16 @@ export class Worker extends EventEmitter {
                 await this.adapter.markIdempotencyCompleted(job.idempotencyKey, result);
             }
             this.emit('job:completed', job, result);
-            for (const pId of this.options.partitions) {
-                const unlocked = await this.adapter.unlockDependentJobs(pId, job._id);
-                if (unlocked > 0) {
-                    this.emit('workflow:unlocked', job._id, unlocked);
-                }
+
+            // REL-06: Parallelize dependency unlock across partitions
+            const unlockResults = await Promise.all(
+                this.options.partitions.map(pId => this.adapter.unlockDependentJobs(pId, job._id))
+            );
+            const totalUnlocked = unlockResults.reduce((a, b) => a + b, 0);
+            if (totalUnlocked > 0) {
+                this.emit('workflow:unlocked', job._id, totalUnlocked);
             }
+
             await this.adapter.recordJobHistory({
                 originalJobId: job._id,
                 name: job.name,
@@ -251,6 +302,11 @@ export class Worker extends EventEmitter {
                 status: 'completed',
                 startedAt: job.lockedAt || new Date()
             });
+
+            // REL-02: Delete completed job from partition after history is safely recorded
+            const partitionModel = this.adapter.getPartitionModel(partitionId);
+            await partitionModel.deleteOne({ _id: job._id });
+
             if (this.pluginManager) {
                 await this.pluginManager.emitJobSuccess(job, result);
             }

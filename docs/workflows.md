@@ -31,6 +31,10 @@ const jobsCreated = await workflow.createWorkflow({
 });
 ```
 
-The engine automatically provisions all jobs into MongoDB in a single atomic database operation. Each job stores a `remainingDependencies` counter.
-When a worker finishes `stepA`, it will automatically decrement the dependency count of its children `stepB` and `stepC`.
+The engine automatically validates the graph for cycles before inserting. If a cyclic dependency is detected (e.g., A → B → A), it throws an error immediately without touching the database.
+
+Once validated, jobs are batched by partition and bulk-inserted in parallel using `Promise.all`, making workflow creation highly efficient even with many nodes.
+
+Each job stores a `remainingDependencies` counter.
+When a worker finishes `stepA`, it will automatically decrement the dependency count of its children `stepB` and `stepC` across all partitions in parallel.
 When `stepD`'s dependency count drops to `0`, it instantly unlocks and is processed.

@@ -8,10 +8,10 @@ import { AsyncZapQueue } from '../core/AsyncZapQueue';
  * Instead of forcing massive Fastify/Express/React dependencies on users installing AsyncZap,
  * we expose an embedded zero-dependency dashboard via HTTP module and simple HTML/JS.
  */
-export async function startDashboard(mongoUri: string, port: number = 3000): Promise<void> {
+export async function startDashboard(mongoUri: string, port: number = 3000, token?: string): Promise<void> {
     await mongoose.connect(mongoUri);
-    const queue = new AsyncZapQueue(mongoose.connection, { partitions: 1 }); // Just for adapter access
-    const adapter = (queue as any).adapter;
+    const queue = new AsyncZapQueue(mongoose.connection, { partitions: 1 }); // Initial for adapter access
+    const adapter = queue.getAdapter(); // QA-01
     const metaModel = adapter.getMetaModel();
         
     let partitionCount = 1;
@@ -20,9 +20,21 @@ export async function startDashboard(mongoUri: string, port: number = 3000): Pro
         if (config) partitionCount = config.partitions;
     } catch(e) {}
 
-    const metricsReader = new Metrics(queue);
+    // BUG-03 fix: Reconstruct queue with real partition count so Metrics scans all partitions
+    const realQueue = new AsyncZapQueue(mongoose.connection, { partitions: partitionCount });
+    const metricsReader = new Metrics(realQueue);
 
     const server = http.createServer(async (req, res) => {
+        // SEC-02: Optional bearer token authentication for non-root endpoints
+        if (token && req.url !== '/') {
+            const authHeader = req.headers.authorization;
+            if (!authHeader || authHeader !== `Bearer ${token}`) {
+                res.writeHead(401, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Unauthorized' }));
+                return;
+            }
+        }
+
         // Simple HTML SPA delivery
         if (req.url === '/' && req.method === 'GET') {
             res.writeHead(200, { 'Content-Type': 'text/html' });

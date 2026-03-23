@@ -31,7 +31,7 @@ Most job queues require Redis as a separate dependency. **AsyncZap** eliminates 
 npm install asynczap
 ```
 
-> **Note**: `mongoose` is required as a peer dependency.
+> **Note**: `mongoose` is required as a peer dependency. `@nestjs/common` is an optional peer dependency (only needed if using `AsyncZapModule`).
 
 ### Basic Usage
 
@@ -70,7 +70,7 @@ bootstrap();
 | ⏱️ **Job Scheduling** | Schedule jobs to execute securely in the future. |
 | 🏎️ **Turbo Mode** | High-throughput batch prefetching capabilities. |
 | 📈 **Prometheus Integration** | Exposed endpoint returning industry-standard metrics. |
-| 🔌 **NestJS Module** | First-class `@nestjs/common` integration (`AsyncZapModule`). |
+| 🔌 **NestJS Module** | Optional `@nestjs/common` integration (`AsyncZapModule`). |
 
 ## 📐 Architecture Overview
 
@@ -116,6 +116,11 @@ AsyncZap comes with an embedded dashboard and a CLI.
 
 ```bash
 npx asynczap dashboard -u mongodb://localhost/myapp -p 3000
+```
+
+Optionally secure the API with a bearer token:
+```bash
+npx asynczap dashboard -u mongodb://localhost/myapp -p 3000 --token my-secret
 ```
 Then visit `http://localhost:3000`.
 

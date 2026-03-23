@@ -16,6 +16,7 @@ export interface JobDocument<T = any> {
     workerId: string | null;
     error?: string;
     result?: any;
+    lockToken?: string;
     dependencies: Types.ObjectId[];
     remainingDependencies: number;
     createdAt: Date;
@@ -40,6 +41,7 @@ export interface WorkerOptions {
     heartbeatInterval?: number;
     maxActiveJobs?: number;       // Global backpressure limit across all workers
     prefetchBatchSize?: number;   // Turbo mode buffer prefetch size
+    drainTimeoutMs?: number;      // Max ms to wait for active jobs to finish during stop() (default: 30000)
 }
 
 export interface AsyncZapOptions {

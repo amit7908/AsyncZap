@@ -8,8 +8,8 @@ Backpressure acts as a safety valve. If you specify a maximum of `10` active job
 ## How It Works
 
 Traditional models rely on Redis for atomic counts. AsyncZap uses MongoDB's built-in atomicity:
-1. `asynczap_counters` collection contains a global counter.
-2. A worker attempts to acquire a slot using `findOneAndUpdate({ slots: { $lt: Math.abs(maxActiveJobs) } }, { $inc: { slots: 1 } })`.
+1. Counter documents are pre-seeded in `asynczap_counters` during `queue.initialize()`.
+2. A worker attempts to acquire a slot using `findOneAndUpdate({ value: { $lt: maxActiveJobs } }, { $inc: { value: 1 } })`.
 3. If it succeeds, the job continues.
 4. If it fails, the worker pauses and relinquishes the job back to the partition.
 

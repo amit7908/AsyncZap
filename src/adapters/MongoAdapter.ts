@@ -1,5 +1,12 @@
+import crypto from 'crypto';
 import { Connection, Model, Types } from 'mongoose';
 import { JobSchema } from '../models/JobModel';
+import { DLQSchema } from '../models/DLQModel';
+import { JobHistorySchema } from '../models/JobHistoryModel';
+import { MetaSchema } from '../models/MetaModel';
+import { WorkerRegistrySchema } from '../models/WorkerModel';
+import { TenantStatSchema } from '../models/TenantModel';
+import { IdempotencySchema } from '../models/IdempotencyModel';
 import { JobDocument } from '../types';
 
 /**
@@ -18,7 +25,7 @@ export class MongoAdapter {
     /**
      * Lazily instantiates the Mongoose model for a specific partition index.
      */
-    private getPartitionModel(partitionId: number): Model<JobDocument> {
+    public getPartitionModel(partitionId: number): Model<JobDocument> {
         if (this.models.has(partitionId)) {
             return this.models.get(partitionId)!;
         }
@@ -82,6 +89,7 @@ export class MongoAdapter {
     async fetchJobBatch(partitionId: number, workerId: string, batchSize: number): Promise<JobDocument[]> {
         const model = this.getPartitionModel(partitionId);
         const now = new Date();
+        const token = crypto.randomUUID();
 
         // 1. Find candidates optimistically
         const candidates = await model.find({
@@ -99,27 +107,28 @@ export class MongoAdapter {
 
         const candidateIds = candidates.map((c: any) => c._id);
 
-        // 2. Atomically attempt to lock them
+        // 2. Atomically attempt to lock them using a unique token
         await model.updateMany(
             {
                 _id: { $in: candidateIds },
-                status: 'pending' // crucial for atomic safety against other workers
+                status: 'pending',
+                lockToken: null // Prevents TOCTOU race — only unlocked jobs can be claimed
             },
             {
                 $set: {
                     status: 'processing',
                     lockedAt: now,
-                    workerId: workerId
+                    workerId: workerId,
+                    lockToken: token
                 }
             }
         );
 
-        // 3. Fetch the ones we successfully locked
+        // 3. Fetch the ones we successfully locked using the unique token
         const acquiredJobs = await model.find({
             _id: { $in: candidateIds },
-            workerId: workerId,
-            status: 'processing',
-            lockedAt: now
+            lockToken: token,
+            status: 'processing'
         }).lean().exec();
 
         return acquiredJobs as JobDocument[];
@@ -204,12 +213,11 @@ export class MongoAdapter {
     /**
      * Instantiates the Dead Letter Queue model (asynczap_failed_jobs).
      */
-    private getDLQModel(): Model<any> {
+    getDLQModel(): Model<any> {
         const dlqCollection = 'asynczap_failed_jobs';
         if (this.connection.models[dlqCollection]) {
             return this.connection.models[dlqCollection];
         }
-        const { DLQSchema } = require('../models/DLQModel');
         return this.connection.model(dlqCollection, DLQSchema, dlqCollection);
     }
 
@@ -221,7 +229,6 @@ export class MongoAdapter {
         if (this.connection.models[historyCollection]) {
             return this.connection.models[historyCollection];
         }
-        const { JobHistorySchema } = require('../models/JobHistoryModel');
         return this.connection.model(historyCollection, JobHistorySchema, historyCollection);
     }
 
@@ -233,7 +240,6 @@ export class MongoAdapter {
         if (this.connection.models[metaCollection]) {
             return this.connection.models[metaCollection];
         }
-        const { MetaSchema } = require('../models/MetaModel');
         return this.connection.model(metaCollection, MetaSchema, metaCollection);
     }
 
@@ -245,7 +251,6 @@ export class MongoAdapter {
         if (this.connection.models[workerCollection]) {
             return this.connection.models[workerCollection];
         }
-        const { WorkerRegistrySchema } = require('../models/WorkerModel');
         return this.connection.model(workerCollection, WorkerRegistrySchema, workerCollection);
     }
 
@@ -277,7 +282,6 @@ export class MongoAdapter {
         if (this.connection.models[tenantCollection]) {
             return this.connection.models[tenantCollection];
         }
-        const { TenantStatSchema } = require('../models/TenantModel');
         return this.connection.model(tenantCollection, TenantStatSchema, tenantCollection);
     }
 
@@ -289,7 +293,6 @@ export class MongoAdapter {
         if (this.connection.models[idempCollection]) {
             return this.connection.models[idempCollection];
         }
-        const { IdempotencySchema } = require('../models/IdempotencyModel');
         return this.connection.model(idempCollection, IdempotencySchema, idempCollection);
     }
 

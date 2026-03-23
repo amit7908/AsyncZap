@@ -57,12 +57,14 @@ export class PartitionManager extends EventEmitter {
                 this.emit('scaled', this.partitionCount);
             }
         } else {
-            // First boot initialization
-            await metaModel.create({
-                _id: 'queue_config',
-                partitions: this.partitionCount,
-                version: 1
-            });
+            // First boot initialization — use upsert to prevent E11000 race across replicas
+            const result = await metaModel.findOneAndUpdate(
+                { _id: 'queue_config' },
+                { $setOnInsert: { partitions: this.partitionCount, version: 1 } },
+                { upsert: true, new: true }
+            );
+            this.partitionCount = result.partitions;
+            this.version = result.version;
         }
     }
 

@@ -3,6 +3,9 @@ import { Connection } from 'mongoose';
 import { AsyncZapOptions } from '../types';
 import { AsyncZapService, ASYNCZAP_CONNECTION, ASYNCZAP_OPTIONS } from './AsyncZapService';
 
+// QA-06: Declare before use (const is not hoisted like var)
+const ASYNCZAP_OPTIONS_FACTORY = 'ASYNCZAP_OPTIONS_FACTORY';
+
 export interface AsyncZapModuleAsyncOptions {
     imports?: any[];
     inject?: any[];
@@ -48,5 +51,3 @@ export class AsyncZapModule {
         };
     }
 }
-
-const ASYNCZAP_OPTIONS_FACTORY = 'ASYNCZAP_OPTIONS_FACTORY';

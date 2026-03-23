@@ -1,6 +1,11 @@
 import { Types } from 'mongoose';
 import { AsyncZapQueue } from '../core/AsyncZapQueue';
 
+export interface ReplayOptions {
+    batchSize?: number;
+    delayBetweenBatchesMs?: number;
+}
+
 /**
  * Handles resurrecting jobs from the Job History audit log or the Dead Letter Queue.
  */
@@ -13,53 +18,55 @@ export class JobReplay {
 
     /**
      * Finds a historical/failed job by its original ID, and adds it back to the queue pipeline.
-     * @param originalJobId The original ObjectId of the job.
-     * @param newPayload Optional new payload to replace the original payload.
      */
     async replayJob(originalJobId: string | Types.ObjectId, newPayload?: any): Promise<any> {
-        const adapter = (this.queue as any).adapter;
+        const adapter = this.queue.getAdapter(); // QA-01
         const historyModel = adapter.getJobHistoryModel();
         
-        // 1. Locate the job in the History Log
         const historicalJob = await historyModel.findOne({ originalJobId }).sort({ finishedAt: -1 });
 
         if (!historicalJob) {
             throw new Error(`JobReplay Error: Could not find job history for ID ${originalJobId}`);
         }
 
-        // 2. Enqueue as a fresh job (resetting attempts and dependencies)
-        // If it was part of a DAG, replaying just this job breaks the original graph,
-        // so it runs standalone by default.
         const job = await this.queue.add(historicalJob.name, newPayload !== undefined ? newPayload : historicalJob.payload, {
             priority: 0,
-            maxAttempts: 3 // Reset back to default or could pull from config
+            maxAttempts: 3
         });
 
         return job;
     }
 
     /**
-     * Mass replays all failed jobs currently trapped in the Dead Letter Queue.
-     * Warning: This can cause a sudden massive spike in queue traffic.
+     * QA-07: Mass replays with rate-limiting to prevent queue saturation.
+     * Processes in batches with configurable delay between each batch.
      */
-    async replayAllFailedJobs(): Promise<number> {
-        const adapter = (this.queue as any).adapter;
+    async replayAllFailedJobs(options: ReplayOptions = {}): Promise<{ replayed: number; total: number }> {
+        const { batchSize = 100, delayBetweenBatchesMs = 1000 } = options;
+        const adapter = this.queue.getAdapter(); // QA-01
         const dlqModel = adapter.getDLQModel();
         
+        const total = await dlqModel.countDocuments();
         const failedJobsCursor = dlqModel.find({}).cursor();
-        let resurrectedCount = 0;
+        let replayed = 0;
+        let batchCount = 0;
 
-        // Traverse using a cursor to prevent memory limit crashes for huge DLQs
         for await (const dlqDoc of failedJobsCursor) {
             await this.queue.add(dlqDoc.name, dlqDoc.payload, {
                 priority: 0,
                 maxAttempts: 3
             });
-            // Delete from DLQ
             await dlqModel.deleteOne({ _id: dlqDoc._id });
-            resurrectedCount++;
+            replayed++;
+            batchCount++;
+
+            // Rate-limit: pause between batches
+            if (batchCount >= batchSize) {
+                batchCount = 0;
+                await new Promise(resolve => setTimeout(resolve, delayBetweenBatchesMs));
+            }
         }
 
-        return resurrectedCount;
+        return { replayed, total };
     }
 }

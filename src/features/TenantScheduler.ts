@@ -10,32 +10,41 @@ import { JobDocument } from '../types';
  */
 export class TenantScheduler {
     private adapter: MongoAdapter;
+    // PERF-02: TTL cache for available tenants
+    private tenantCache: { data: string[], expiresAt: number } | null = null;
 
     constructor(adapter: MongoAdapter) {
         this.adapter = adapter;
     }
 
     /**
+     * PERF-01: Collapsed to a single findOneAndUpdate with conditional increment.
      * Finds and increments active job count for a tenant if they are under their limit.
      * Returns true if allowed to proceed, false if throttled.
      */
     async trackJobStart(tenantId: string): Promise<boolean> {
         const tenantModel = this.adapter.getTenantModel();
         
-        // Ensure tenant exists
+        // Single atomic operation: upsert + conditional increment
+        const result = await tenantModel.findOneAndUpdate(
+            { tenantId, $expr: { $lt: ["$activeJobs", "$concurrencyLimit"] } },
+            {
+                $inc: { activeJobs: 1 },
+                $setOnInsert: { tenantId, concurrencyLimit: 100, priorityTier: 0 }
+            },
+            { upsert: false, new: true }
+        );
+
+        if (result) return true;
+
+        // If no match, ensure tenant doc exists (new tenant case)
         await tenantModel.updateOne(
             { tenantId },
             { $setOnInsert: { tenantId, activeJobs: 0, concurrencyLimit: 100, priorityTier: 0 } },
             { upsert: true }
         );
 
-        // Attempt to increment only if below concurrency limit
-        const result = await tenantModel.updateOne(
-            { tenantId, $expr: { $lt: ["$activeJobs", "$concurrencyLimit"] } },
-            { $inc: { activeJobs: 1 } }
-        );
-
-        return result.modifiedCount > 0;
+        return false;
     }
 
     /**
@@ -47,6 +56,8 @@ export class TenantScheduler {
             { tenantId, activeJobs: { $gt: 0 } },
             { $inc: { activeJobs: -1 } }
         );
+        // Invalidate cache when tenant state changes
+        this.tenantCache = null;
     }
 
     /**
@@ -62,20 +73,27 @@ export class TenantScheduler {
     }
 
     /**
+     * PERF-02: Cached with 500ms TTL to avoid DB query on every poll tick.
      * Fetches a list of tenants currently allowed to process jobs (sorted by priority tier).
      */
     async getAvailableTenants(): Promise<string[]> {
+        // Return cached data if still fresh
+        if (this.tenantCache && Date.now() < this.tenantCache.expiresAt) {
+            return this.tenantCache.data;
+        }
+
         const tenantModel = this.adapter.getTenantModel();
         
-        // We find tenants where activeJobs < concurrencyLimit, sort descending by priority
         const tenants = await tenantModel.find({
             $expr: { $lt: ["$activeJobs", "$concurrencyLimit"] }
         })
         .sort({ priorityTier: -1 })
-        .limit(100) // Sanity limit for huge multi-tenant systems
+        .limit(100)
         .select('tenantId')
         .lean();
 
-        return tenants.map(t => t.tenantId);
+        const data = tenants.map(t => t.tenantId);
+        this.tenantCache = { data, expiresAt: Date.now() + 500 };
+        return data;
     }
 }

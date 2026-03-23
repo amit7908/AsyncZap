@@ -36,4 +36,14 @@ Once you've patched the underlying application bug, AsyncZap allows you to repla
 npx asynczap replay <job_id> -u mongodb://localhost/myapp
 ```
 
+For mass replays, use the rate-limited programmatic API to prevent queue saturation:
+
+```typescript
+const result = await queue.replay.replayAllFailedJobs({
+  batchSize: 100,              // Process 100 jobs per batch
+  delayBetweenBatchesMs: 1000  // 1s pause between batches
+});
+console.log(`Replayed ${result.replayed} of ${result.total} failed jobs`);
+```
+
 You can also use the programmatic Replay UI inside the Web Dashboard.

@@ -44,8 +44,8 @@ export class QueueScheduler extends EventEmitter {
             });
         }, this.options.pollIntervalMs);
         
-        // Run immediately on start
-        this.recoverStaleJobs();
+        // Run immediately on start — REL-04: catch first-run errors
+        this.recoverStaleJobs().catch(err => this.emit('scheduler:error', err));
     }
 
     /**

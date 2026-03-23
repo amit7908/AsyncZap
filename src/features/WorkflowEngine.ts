@@ -23,24 +23,38 @@ export class WorkflowEngine {
 
     /**
      * Builds and inserts a complete workflow.
-     * Evaluates dependencies and automatically links ObjectIds.
-     * 
-     * @param definition A key-value map defining the steps and their dependencies.
-     * @returns A map of the created jobs (NodeKey -> JobDocument).
+     * PERF-03: Batches inserts by partition using insertBulk + Promise.all.
      */
     async createWorkflow(definition: WorkflowDefinition): Promise<Record<string, JobDocument>> {
         const nodeKeys = Object.keys(definition);
+
+        // QA-05: Cycle detection before any DB insertion
+        const hasCycle = (node: string, visited: Set<string>, stack: Set<string>): boolean => {
+            visited.add(node); stack.add(node);
+            for (const dep of definition[node]?.dependsOn || []) {
+                if (!visited.has(dep) && hasCycle(dep, visited, stack)) return true;
+                if (stack.has(dep)) return true;
+            }
+            stack.delete(node); return false;
+        };
+        const visited = new Set<string>();
+        for (const key of nodeKeys) {
+            if (!visited.has(key) && hasCycle(key, visited, new Set<string>())) {
+                throw new Error(`Workflow Error: Cycle detected involving node '${key}'`);
+            }
+        }
         
-        // 1. Assign ObjectIds to all nodes up front before inserting
-        // This allows us to link dependencies in a single DB pass.
+        // 1. Assign ObjectIds to all nodes up front
         const idMap = new Map<string, Types.ObjectId>();
         for (const key of nodeKeys) {
             idMap.set(key, new Types.ObjectId());
         }
 
-        const buildPayloads: Array<{ name: string; payload: any; tempId: Types.ObjectId; options: JobOptions; dependencies: Types.ObjectId[]; remainingDependencies: number }> = [];
+        // 2. Resolve dependencies and prepare documents grouped by partition
+        const partitionManager = this.queue.getPartitionManager();
+        const adapter = this.queue.getAdapter();
+        const partitionBuckets = new Map<number, Array<{ key: string; doc: Partial<JobDocument> }>>();
 
-        // 2. Resolve dependencies and prepare documents
         for (const [nodeKey, nodeInput] of Object.entries(definition)) {
             const tempId = idMap.get(nodeKey)!;
             const dependencies: Types.ObjectId[] = [];
@@ -56,76 +70,70 @@ export class WorkflowEngine {
                 remainingDependencies = dependencies.length;
             }
 
-            buildPayloads.push({
+            const partitionId = partitionManager.getPartitionFor(nodeInput.job);
+            const jobDoc: Partial<JobDocument> = {
+                _id: tempId,
                 name: nodeInput.job,
                 payload: nodeInput.payload || {},
-                options: nodeInput.options || {},
-                tempId,
+                status: 'pending',
+                priority: nodeInput.options?.priority || 0,
+                maxAttempts: nodeInput.options?.maxAttempts || 3,
+                attempts: 0,
+                runAt: nodeInput.options?.delay ? new Date(Date.now() + nodeInput.options.delay) : new Date(),
                 dependencies,
                 remainingDependencies
-            });
-        }
-
-        // 3. Delegate to the queue's Bulk add logic (extended to support predefined IDs and DAG fields)
-        const createdJobsMap: Record<string, JobDocument> = {};
-        
-        // Use the queue's adapter directly to insert these highly customized DAG nodes
-        // (AsyncZapQueue.addBulk is too simplified for full DAG fields in Phase 1)
-        const partitionManager = (this.queue as any).partitionManager;
-        const adapter = (this.queue as any).adapter;
-
-        for (let i = 0; i < buildPayloads.length; i++) {
-            const input = buildPayloads[i];
-            const originalKey = nodeKeys[i];
-            
-            const partitionId = partitionManager.getPartitionFor(input.name);
-            const jobDoc: Partial<JobDocument> = {
-                _id: input.tempId, // Force ObjectId
-                name: input.name,
-                payload: input.payload,
-                status: 'pending',
-                priority: input.options.priority || 0,
-                maxAttempts: input.options.maxAttempts || 3,
-                attempts: 0,
-                runAt: input.options.delay ? new Date(Date.now() + input.options.delay) : new Date(),
-                dependencies: input.dependencies,
-                remainingDependencies: input.remainingDependencies
             };
 
-            const inserted = await adapter.insertJob(partitionId, jobDoc);
-            createdJobsMap[originalKey] = inserted;
+            if (!partitionBuckets.has(partitionId)) {
+                partitionBuckets.set(partitionId, []);
+            }
+            partitionBuckets.get(partitionId)!.push({ key: nodeKey, doc: jobDoc });
         }
+
+        // 3. Bulk insert per partition in parallel
+        const createdJobsMap: Record<string, JobDocument> = {};
+
+        await Promise.all(
+            Array.from(partitionBuckets.entries()).map(async ([pId, items]) => {
+                const docs = items.map(item => item.doc);
+                const inserted = await adapter.insertBulk(pId, docs);
+                // Map results back by pre-assigned _id
+                for (const item of items) {
+                    const found = inserted.find((j: JobDocument) => j._id.toString() === item.doc._id!.toString());
+                    if (found) createdJobsMap[item.key] = found;
+                }
+            })
+        );
 
         return createdJobsMap;
     }
 
     /**
      * Resumes a stalled/failed workflow node by its original Job ID.
-     * Optionally injects a new payload before resetting its status.
-     * 
-     * @param jobId The precise DB document _id of the failed job node
-     * @param newPayload Optional adjusted payload to overwrite the bad data
+     * PERF-06: Uses Promise.all for parallel partition scanning.
      */
     async resumeNode(jobId: string | Types.ObjectId, newPayload?: any): Promise<boolean> {
-        const adapter = (this.queue as any).adapter;
-        const partitionManager = (this.queue as any).partitionManager;
+        const adapter = this.queue.getAdapter();
+        const partitionManager = this.queue.getPartitionManager();
 
-        let foundJob = null;
-        let foundPartition = -1;
-        
+        // PERF-06: Scan all partitions in parallel instead of sequentially
         const counts = partitionManager.getPartitionCount();
+        const scanPromises = [];
         for (let pId = 0; pId < counts; pId++) {
-            const model = adapter.getPartitionModel(pId);
-            const job = await model.findById(jobId).lean().exec();
-            if (job) {
-                foundJob = job;
-                foundPartition = pId;
-                break;
-            }
+            scanPromises.push(
+                (async () => {
+                    const model = adapter.getPartitionModel(pId);
+                    const job = await model.findById(jobId).lean().exec();
+                    return job ? { job, partitionId: pId } : null;
+                })()
+            );
         }
 
-        if (foundJob) {
-            // Job was found in normal partition (likely status: 'failed')
+        const results = await Promise.all(scanPromises);
+        const found = results.find(r => r !== null);
+
+        if (found) {
+            const { job: foundJob, partitionId: foundPartition } = found;
             const model = adapter.getPartitionModel(foundPartition);
             const updates: any = {
                 status: 'pending',
@@ -146,11 +154,10 @@ export class WorkflowEngine {
 
         // Check DLQ if missing
         const dlqModel = adapter.getDLQModel();
-        const dlqJob = await dlqModel.findOne({ originalJobId: jobId }).lean().exec();
+        const dlqJob: any = await dlqModel.findOne({ originalJobId: jobId }).lean().exec();
 
         if (dlqJob) {
-            // Move back from DLQ
-            foundPartition = dlqJob.partitionId;
+            const foundPartition = dlqJob.partitionId;
             const model = adapter.getPartitionModel(foundPartition);
             
             const recoveredDoc = {

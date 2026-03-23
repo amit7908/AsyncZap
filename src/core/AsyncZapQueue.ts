@@ -13,11 +13,13 @@ import { TenantScheduler } from '../features/TenantScheduler';
 export class AsyncZapQueue {
     private adapter: MongoAdapter;
     private partitionManager: PartitionManager;
+    private connection: Connection;
     public replay: JobReplay;
     public pluginManager: PluginManager;
     public tenantScheduler: TenantScheduler;
 
     constructor(connection: Connection, options: AsyncZapOptions) {
+        this.connection = connection;
         this.adapter = new MongoAdapter(connection);
         this.partitionManager = new PartitionManager(options.partitions);
         this.partitionManager.setAdapter(this.adapter);
@@ -39,6 +41,14 @@ export class AsyncZapQueue {
         const promises = [];
         for (let i = 0; i < counts; i++) {
             promises.push(this.adapter.createPartitionCollection(i));
+            // PERF-05: Pre-seed backpressure counter documents to avoid cold-start fallback chain
+            promises.push(
+                this.connection.collection('asynczap_counters').updateOne(
+                    { _id: `active_jobs_partition_${i}` as any },
+                    { $setOnInsert: { value: 0 } },
+                    { upsert: true }
+                )
+            );
         }
         await Promise.all(promises);
         await this.pluginManager.emitQueueInit();
@@ -54,10 +64,14 @@ export class AsyncZapQueue {
             validatedPayload = schemaResult.data;
         }
 
+        // SEC-03: Recursive check for dangerous MongoDB operators at any depth
         if (typeof validatedPayload === 'object' && validatedPayload !== null) {
-            const keys = Object.keys(validatedPayload);
-            if (keys.some(k => k.startsWith('$'))) {
-                throw new Error('Payload cannot contain root keys starting with $ (dangerous MongoDB operators)');
+            const hasDollarKey = (obj: any): boolean => {
+                if (typeof obj !== 'object' || obj === null) return false;
+                return Object.keys(obj).some(k => k.startsWith('$') || hasDollarKey(obj[k]));
+            };
+            if (hasDollarKey(validatedPayload)) {
+                throw new Error('Payload cannot contain keys starting with $ at any depth (dangerous MongoDB operators)');
             }
         }
 
@@ -116,15 +130,15 @@ export class AsyncZapQueue {
         // Bucket map: partition index -> Array<partial Job>
         const partitionBuckets = new Map<number, Partial<JobDocument>[]>();
         
-        // Execute Idempotency filtering
-        const validInputs = [];
-        for (const input of jobs) {
-            if (input.options && input.options.idempotencyKey) {
-                const locked = await this.adapter.acquireIdempotencyLock(input.options.idempotencyKey);
-                if (!locked) continue; // Skip duplicate
-            }
-            validInputs.push(input);
-        }
+        // PERF-04: Execute idempotency filtering in parallel
+        const idempotencyResults = await Promise.all(
+            jobs.map(input =>
+                input.options?.idempotencyKey
+                    ? this.adapter.acquireIdempotencyLock(input.options.idempotencyKey).catch(() => false)
+                    : Promise.resolve(true)
+            )
+        );
+        const validInputs = jobs.filter((_, i) => idempotencyResults[i]);
 
         for (const input of validInputs) {
             const partitionId = this.partitionManager.getPartitionFor(input.name);
@@ -165,4 +179,9 @@ export class AsyncZapQueue {
     createWorker(options: WorkerOptions): Worker {
         return new Worker(this.adapter, options, this.pluginManager);
     }
+
+    /** @internal */
+    getAdapter(): MongoAdapter { return this.adapter; }
+    /** @internal */
+    getPartitionManager(): PartitionManager { return this.partitionManager; }
 }
